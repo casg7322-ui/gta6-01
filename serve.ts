@@ -1,8 +1,7 @@
-// A tiny static server for game/ (Node 22, standard library only), so the
-// entry can be played locally without a build step: `node serve.ts` serves
-// game/ on http://localhost:8080 (or --port <n>). It sends the MIME types a
-// browser game needs, refuses any path outside game/, and otherwise does
-// nothing clever: a development convenience, not a web server.
+// Solara Bay — a tiny static server for local play-testing.
+// Serves game/ on http://localhost:8080 (or --port N). Node standard
+// library only; refuses any path that escapes game/.
+
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -10,9 +9,9 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const portFlag = args.indexOf('--port');
+const wanted = portFlag === -1 ? 8080 : Number(args[portFlag + 1]);
+const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -23,15 +22,7 @@ const MIME = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-  '.wasm': 'application/wasm',
-  '.wav': 'audio/wav',
-  '.mp3': 'audio/mpeg',
-  '.ogg': 'audio/ogg',
   '.txt': 'text/plain; charset=utf-8',
 };
 
@@ -66,5 +57,5 @@ createServer((request, response) => {
   });
   createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
-  console.log(`game/ is on http://localhost:${port}`);
+  console.log(`Solara Bay is on http://localhost:${port}`);
 });

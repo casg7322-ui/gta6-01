@@ -1,158 +1,189 @@
-// The city of Solara Bay: a road grid, blocks of buildings, parks, a beach
-// strip along the south edge, and the fixed story locations. Pure data and
-// math (no DOM), so the Node win-proof can import it too.
-import { COLS, PITCH, ROAD_W, ROWS, WORLD_H, WORLD_W, COLORS } from './config.js';
+// City generation for Solara Bay: a road grid, blocks of buildings and parks,
+// a beach along the south edge, a marina in the north-east, and the road
+// graph the traffic, police and autopilot all drive on.
+//
+// The graph uses ONLY inner intersections (1..cols-1, 1..rows-1). The outer
+// ring roads sit half off the map, so routing through them grinds cars into
+// the world edge forever.
 
-// Fixed story locations — every one sits on a road centreline so a car can
-// reach it.
-export const PLACES = {
-  safehouse: { name: 'Safehouse', x: 1 * PITCH, y: 1 * PITCH, label: 'SAFEHOUSE' },
-  paintShop: { name: 'Paint Shop', x: 4 * PITCH, y: 2 * PITCH, label: 'PAINT SHOP' },
-  marina: { name: 'Marina', x: 9 * PITCH, y: 1 * PITCH, label: 'MARINA' },
-  docks: { name: 'Docks', x: 1 * PITCH, y: 6 * PITCH, label: 'DOCKS' },
-  penthouse: { name: 'Penthouse', x: 8 * PITCH, y: 3 * PITCH, label: 'PENTHOUSE' },
-  plaza: { name: 'Central Plaza', x: 5 * PITCH, y: 4 * PITCH, label: 'PLAZA' },
-  market: { name: 'Night Market', x: 3 * PITCH, y: 5 * PITCH, label: 'MARKET' },
-};
+import { DISTRICTS, LANDMARKS, PALETTE, WORLD } from './config.js';
+import { makeRng } from './random.js';
 
-export function buildCity(rng) {
-  const buildings = [];
-  const trees = [];
-  const parks = [];
-  const beachUmbrellas = [];
-  for (let bx = 0; bx < COLS; bx += 1) {
-    for (let by = 0; by < ROWS; by += 1) {
-      const x0 = bx * PITCH + ROAD_W / 2 + 8;
-      const y0 = by * PITCH + ROAD_W / 2 + 8;
-      const x1 = (bx + 1) * PITCH - ROAD_W / 2 - 8;
-      const y1 = (by + 1) * PITCH - ROAD_W / 2 - 8;
-      // The south row is the beach: sand, palms and umbrellas, no buildings.
-      if (by === ROWS - 1) {
-        for (let i = 0; i < 7; i += 1) {
-          const ux = rng.range(x0 + 20, x1 - 20);
-          const uy = rng.range(y0 + 20, y1 - 20);
-          beachUmbrellas.push({ x: ux, y: uy, color: rng.pick(['#ff6b6b', '#2ec4b6', '#ffd23f', '#ff9f1c']) });
-          trees.push({ x: ux + rng.range(-40, 40), y: uy + rng.range(-30, 30), r: rng.range(9, 13) });
-        }
-        continue;
-      }
-      // A few blocks are parks.
-      if (rng.chance(0.14)) {
-        parks.push({ x0, y0, x1, y1 });
-        for (let i = 0; i < 9; i += 1) {
-          trees.push({ x: rng.range(x0 + 16, x1 - 16), y: rng.range(y0 + 16, y1 - 16), r: rng.range(10, 16) });
-        }
-        continue;
-      }
-      // Otherwise 1–3 buildings per block.
-      const count = rng.int(1, 3);
-      for (let i = 0; i < count; i += 1) {
-        const w = rng.range(70, (x1 - x0) / count - 12);
-        const h = rng.range(70, y1 - y0 - 16);
-        const x = x0 + (i * (x1 - x0)) / count + rng.range(4, 14);
-        const y = y0 + rng.range(6, Math.max(8, y1 - y0 - h - 6));
-        buildings.push({
-          x, y, w, h,
-          color: rng.pick(COLORS.buildingRoof),
-          tall: rng.chance(0.3),
-          windows: rng.int(2, 5),
-        });
-      }
-      // Street trees on block corners.
-      if (rng.chance(0.6)) trees.push({ x: x0 + 6, y: y0 + 6, r: 10 });
-      if (rng.chance(0.6)) trees.push({ x: x1 - 6, y: y1 - 6, r: 10 });
-    }
+const { cols, rows, block, width, height } = WORLD;
+
+function districtAt(x, y) {
+  for (const d of DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
   }
-  return { buildings, trees, parks, beachUmbrellas };
+  return DISTRICTS[0];
 }
 
-// --- Road graph: intersections at every (i*PITCH, j*PITCH) ---
-// The outer roads (i=0, i=COLS, j=0, j=ROWS) sit half off the map, so a car
-// chasing a waypoint on one grinds against the world edge forever. Pathing
-// only ever uses the inner intersections, which are fully on the map.
-export function nearestNode(x, y) {
-  const i = Math.max(1, Math.min(COLS - 1, Math.round(x / PITCH)));
-  const j = Math.max(1, Math.min(ROWS - 1, Math.round(y / PITCH)));
-  return { i, j, x: i * PITCH, y: j * PITCH };
-}
-
-export function nodeKey(i, j) {
+export function nodeId(i, j) {
   return `${i},${j}`;
 }
 
-// Breadth-first path over the intersection grid. Returns waypoints
-// [{x, y}, ...] from start to goal (inclusive), or [] when unreachable.
-export function findPath(sx, sy, gx, gy) {
-  const start = nearestNode(sx, sy);
-  const goal = nearestNode(gx, gy);
-  if (start.i === goal.i && start.j === goal.j) return [{ x: gx, y: gy }];
+export function nodePos(i, j) {
+  return { x: i * block, y: j * block };
+}
+
+// Nearest inner intersection to a world point.
+export function nearestNode(x, y) {
+  const i = Math.max(1, Math.min(cols - 1, Math.round(x / block)));
+  const j = Math.max(1, Math.min(rows - 1, Math.round(y / block)));
+  return { i, j };
+}
+
+// Breadth-first route over inner intersections. Returns a list of world
+// points (road centres) from the start node to the goal node, inclusive.
+export function findRoute(city, fromX, fromY, toX, toY) {
+  const start = nearestNode(fromX, fromY);
+  const goal = nearestNode(toX, toY);
+  const startKey = nodeId(start.i, start.j);
+  const goalKey = nodeId(goal.i, goal.j);
+  if (startKey === goalKey) return [nodePos(goal.i, goal.j)];
   const prev = new Map();
-  const queue = [start];
-  prev.set(nodeKey(start.i, start.j), null);
+  const queue = [startKey];
+  prev.set(startKey, null);
   while (queue.length > 0) {
-    const cur = queue.shift();
-    if (cur.i === goal.i && cur.j === goal.j) break;
+    const key = queue.shift();
+    if (key === goalKey) break;
+    const [ci, cj] = key.split(',').map(Number);
     for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const ni = cur.i + di;
-      const nj = cur.j + dj;
-      if (ni < 1 || ni > COLS - 1 || nj < 1 || nj > ROWS - 1) continue;
-      const key = nodeKey(ni, nj);
-      if (prev.has(key)) continue;
-      prev.set(key, cur);
-      queue.push({ i: ni, j: nj, x: ni * PITCH, y: nj * PITCH });
+      const ni = ci + di;
+      const nj = cj + dj;
+      if (ni < 1 || ni > cols - 1 || nj < 1 || nj > rows - 1) continue;
+      const nk = nodeId(ni, nj);
+      if (prev.has(nk)) continue;
+      prev.set(nk, key);
+      queue.push(nk);
     }
   }
-  const goalKey = nodeKey(goal.i, goal.j);
-  if (!prev.has(goalKey)) return [];
+  if (!prev.has(goalKey)) return [nodePos(goal.i, goal.j)];
   const path = [];
-  let cur = goal;
-  while (cur) {
-    path.unshift({ x: cur.x, y: cur.y });
-    cur = prev.get(nodeKey(cur.i, cur.j));
+  let key = goalKey;
+  while (key !== null) {
+    const [pi, pj] = key.split(',').map(Number);
+    path.push(nodePos(pi, pj));
+    key = prev.get(key);
   }
-  path.push({ x: gx, y: gy });
+  path.reverse();
   return path;
 }
 
-// Distance from a point to the nearest road centreline (0 when on a road).
-export function roadDistance(x, y) {
-  const dx = Math.min(x % PITCH, PITCH - (x % PITCH));
-  const dy = Math.min(y % PITCH, PITCH - (y % PITCH));
-  const onV = dx <= ROAD_W / 2;
-  const onH = dy <= ROAD_W / 2;
-  if (onV || onH) return 0;
-  return Math.min(dx - ROAD_W / 2, dy - ROAD_W / 2);
-}
+export function generateCity(seed) {
+  const rng = makeRng(seed);
+  const buildings = [];
+  const parks = [];
+  const trees = [];
+  const waters = [];
 
-export function onRoad(x, y) {
-  return roadDistance(x, y) === 0;
-}
-
-// Circle vs buildings: returns the first building hit, or null.
-export function hitBuilding(city, x, y, r) {
-  for (const b of city.buildings) {
-    if (x + r > b.x && x - r < b.x + b.w && y + r > b.y && y - r < b.y + b.h) return b;
+  // Marina water: the north-east corner blocks are open water with docks.
+  const marinaBlocks = new Set(['8,0', '9,0', '9,1']);
+  // South Beach: the bottom row of blocks is sand, no buildings.
+  for (let c = 0; c < cols; c++) {
+    for (let r = 0; r < rows; r++) {
+      const key = `${c},${r}`;
+      const bx = c * block;
+      const by = r * block;
+      const inner = 74; // inset from the road edge
+      if (marinaBlocks.has(key)) {
+        waters.push({ x: bx + 8, y: by + 8, w: block - 16, h: block - 16 });
+        continue;
+      }
+      if (r === rows - 1 && c < 7) {
+        // Beach strip: palms only, the sand is drawn by the renderer.
+        const palms = rng.int(2, 5);
+        for (let p = 0; p < palms; p++) {
+          trees.push({ x: bx + rng.range(60, block - 60), y: by + rng.range(90, block - 40), palm: true });
+        }
+        continue;
+      }
+      if (rng.chance(0.16)) {
+        parks.push({ x: bx + inner - 18, y: by + inner - 18, w: block - 2 * (inner - 18), h: block - 2 * (inner - 18) });
+        const count = rng.int(4, 8);
+        for (let p = 0; p < count; p++) {
+          trees.push({ x: bx + rng.range(inner, block - inner), y: by + rng.range(inner, block - inner), palm: false });
+        }
+        continue;
+      }
+      // A block holds one big building or a pair of smaller ones.
+      const twin = rng.chance(0.45);
+      const spots = twin
+        ? [
+            { x: bx + inner, y: by + inner, w: block - 2 * inner, h: (block - 2 * inner) / 2 - 14 },
+            { x: bx + inner, y: by + inner + (block - 2 * inner) / 2 + 14, w: block - 2 * inner, h: (block - 2 * inner) / 2 - 14 },
+          ]
+        : [{ x: bx + inner, y: by + inner, w: block - 2 * inner, h: block - 2 * inner }];
+      for (const s of spots) {
+        const tall = districtAt(bx + block / 2, by + block / 2).name === 'Downtown' && rng.chance(0.5);
+        buildings.push({
+          x: s.x,
+          y: s.y,
+          w: s.w,
+          h: s.h,
+          color: rng.pick(PALETTE.building),
+          roof: rng.pick(PALETTE.roof),
+          tall,
+          floors: tall ? rng.int(6, 12) : rng.int(1, 3),
+        });
+      }
+      if (rng.chance(0.5)) {
+        trees.push({ x: bx + rng.range(inner, block - inner), y: by + rng.range(inner, block - inner), palm: rng.chance(0.3) });
+      }
+    }
   }
-  return null;
+
+  // Landmark footprints: clear buildings near landmarks so their plazas read.
+  const landmarks = {};
+  for (const [name, lm] of Object.entries(LANDMARKS)) {
+    landmarks[name] = { ...lm };
+  }
+
+  return {
+    seed,
+    buildings,
+    parks,
+    trees,
+    waters,
+    landmarks,
+    districtAt,
+    // Road centre lines, for the renderer and the minimap.
+    verticalRoads: Array.from({ length: cols + 1 }, (_, i) => i * block),
+    horizontalRoads: Array.from({ length: rows + 1 }, (_, j) => j * block),
+  };
 }
 
-// Move a circle with axis-separated collision against buildings and the
-// world edge. Returns {x, y, hit} — hit is true when a wall blocked motion.
-export function moveCircle(city, x, y, dx, dy, r) {
+// Circle-vs-rectangle push-out used by every moving thing.
+export function resolveCircleRect(px, py, radius, rect) {
+  const cx = Math.max(rect.x, Math.min(px, rect.x + rect.w));
+  const cy = Math.max(rect.y, Math.min(py, rect.y + rect.h));
+  const dx = px - cx;
+  const dy = py - cy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= radius * radius) return null;
+  if (d2 === 0) return { x: px, y: rect.y - radius, hit: true };
+  const d = Math.sqrt(d2);
+  const push = radius - d;
+  return { x: px + (dx / d) * push, y: py + (dy / d) * push, hit: true };
+}
+
+export function collideWithBuildings(city, x, y, radius) {
+  let nx = x;
+  let ny = y;
   let hit = false;
-  const nx = x + dx;
-  if (!hitBuilding(city, nx, y, r) && nx >= r && nx <= WORLD_W - r) x = nx;
-  else hit = true;
-  const ny = y + dy;
-  if (!hitBuilding(city, x, ny, r) && ny >= r && ny <= WORLD_H - r) y = ny;
-  else hit = true;
-  return { x, y, hit };
+  for (const b of city.buildings) {
+    // Cheap broad-phase: skip buildings far away.
+    if (nx < b.x - radius || nx > b.x + b.w + radius || ny < b.y - radius || ny > b.y + b.h + radius) continue;
+    const r = resolveCircleRect(nx, ny, radius, b);
+    if (r) {
+      nx = r.x;
+      ny = r.y;
+      hit = true;
+    }
+  }
+  return { x: nx, y: ny, hit };
 }
 
-// A random point on an inner road, for spawning traffic and pedestrians.
-export function randomRoadPoint(rng) {
-  if (rng.chance(0.5)) {
-    return { x: rng.int(1, COLS - 1) * PITCH, y: rng.range(PITCH, WORLD_H - PITCH) };
-  }
-  return { x: rng.range(PITCH, WORLD_W - PITCH), y: rng.int(1, ROWS - 1) * PITCH };
-}
+export { WORLD, LANDMARKS };
+export const CITY_WIDTH = width;
+export const CITY_HEIGHT = height;
