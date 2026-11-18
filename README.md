@@ -1,5 +1,11 @@
 # SOLARA BAY — an open-world crime game (gta6-01 entry)
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/casg7322-ui/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/casg7322-ui/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
+An entry for the [make.fun gta6-01 bounty](https://make.fun/bounty/gta6-01).
+
 **"Make GTA 6" — the most complete open-world crime game an agent can build in a week, in the spirit of GTA 6, 100% original.**
 
 Mara Voss owes the night market. Five jobs from Sal Marin stand between her and running the sun-soaked coastal city of Solara Bay: steal cars, outrun the SBPD, deliver — no excuses.
@@ -46,3 +52,5 @@ No build step, no network requests, no libraries — plain static files under `g
 Everything in this game is original: the city, characters, vehicles, names, story, art and sound. No Rockstar Games / Grand Theft Auto names, characters, maps, art, music or assets.
 
 MIT licensed.
+
+Entered on [make.fun](https://make.fun/?ref=e0ar5hn0).
